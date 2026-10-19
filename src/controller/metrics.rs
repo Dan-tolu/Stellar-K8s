@@ -1,3 +1,15 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Prometheus metrics for the Stellar-K8s operator
 //!
 //! # Exported metrics
@@ -11,7 +23,15 @@
 //! - `stellar_node_sync_status` (gauge): node sync status (0=Pending, 1=Creating, 2=Running, 3=Syncing, 4=Ready, 5=Failed, 6=Degraded, 7=Suspended).
 //! - `stellar_node_up` (gauge): binary indicator if node is up based on pod readiness (1=up, 0=down).
 //! - `stellar_horizon_tps` (gauge): Horizon TPS labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_horizon_queue_length` (gauge): pending Horizon request queue length labeled by namespace/name/node_type/network/hardware_generation.
 //! - `stellar_node_active_connections` (gauge): active peer connections labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_horizon_request_error_ratio` (gauge): ratio (0.0-1.0) of Horizon API requests returning 4xx/5xx, labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_horizon_db_query_duration_seconds` (gauge): average Horizon database query duration in seconds, labeled by namespace/name/node_type/network/hardware_generation.
+//! - `stellar_traffic_shift_phase` (gauge): phase of a health-gated multi-region traffic shift plan (0=Idle, 1=Gated, 2=Draining, 3=Shifting, 4=Soaking, 5=Completed, 6=Aborted, 7=Failed).
+//! - `stellar_traffic_shift_primary_weight_percent` (gauge): share of traffic still served by the primary region (0-100).
+//! - `stellar_traffic_shift_rto_seconds` (gauge): measured recovery time of the last completed traffic shift, in seconds.
+//! - `stellar_job_orphans_reclaimed_total` (counter): reclaimed Job/Pod artifacts labeled by namespace/kind/orphan class.
+//! - `stellar_job_orphan_pods_outstanding` (gauge): orphaned Job pods still pending after a sweep, labeled by namespace.
 
 use std::sync::atomic::{AtomicI64, AtomicU64};
 
@@ -63,16 +83,24 @@ pub static INGESTION_LAG: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
 pub static HORIZON_TPS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
+/// Gauge tracking pending Horizon request queue length
+pub static HORIZON_QUEUE_LENGTH: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
 /// Gauge tracking active connections per node
 pub static ACTIVE_CONNECTIONS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
-/// Gauge tracking the pending Soroban RPC request queue depth per node.
-///
-/// Fed by the queue autoscaler's collector (see [`crate::controller::autoscaler`])
-/// and consumed by the operator's custom autoscaling loop to scale the Soroban
-/// RPC Deployment directly from burst load.
+/// Gauge tracking pending Soroban RPC requests per node.
 pub static PENDING_RPC_QUEUE: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking Horizon API request error ratio per node
+pub static HORIZON_REQUEST_ERROR_RATIO: Lazy<Family<NodeLabels, Gauge<f64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking average Horizon database query duration in seconds per node
+pub static HORIZON_DB_QUERY_DURATION_SECONDS: Lazy<Family<NodeLabels, Gauge<f64, AtomicU64>>> =
     Lazy::new(Family::default);
 
 /// Gauge tracking archive integrity status (1 = healthy, 0 = corrupted)
@@ -123,6 +151,14 @@ pub static PVC_SIZE_BYTES: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
 
 /// Gauge tracking PVC expansion count
 pub static PVC_EXPANSION_COUNT: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking snapshot integrity check status (1 = pass, 0 = fail)
+pub static SNAPSHOT_INTEGRITY_STATUS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking snapshot integrity check duration in milliseconds
+pub static SNAPSHOT_INTEGRITY_CHECK_DURATION_MS: Lazy<Family<NodeLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
 
 /// Histogram tracking consensus latency per validator
@@ -180,6 +216,50 @@ pub struct TransactionResultLabels {
     pub network: String,
     pub result: String, // "success" or "failed"
 }
+
+/// Labels for Horizon migration metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct HorizonMigrationLabels {
+    pub namespace: String,
+    pub name: String,
+    pub network: String,
+    pub status: String, // "success" or "failed"
+}
+
+/// Labels identifying one watched Stellar asset.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct AssetLabels {
+    pub namespace: String,
+    pub monitor: String,
+    pub network: String,
+    pub asset_code: String,
+    pub issuer: String,
+    pub contract_id: String,
+}
+
+/// Current asset supply in stroops (1 asset unit = 10^7 stroops).
+pub static ASSET_SUPPLY_STROOPS: Lazy<Family<AssetLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Current number of accounts holding the watched asset.
+pub static ASSET_HOLDERS: Lazy<Family<AssetLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Current asset liquidity in stroops.
+pub static ASSET_LIQUIDITY_STROOPS: Lazy<Family<AssetLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Signed supply change percentage observed in the most recently processed ledger.
+pub static ASSET_SUPPLY_CHANGE_PERCENT: Lazy<Family<AssetLabels, Gauge<f64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Number of large supply changes observed for a watched asset.
+pub static ASSET_LARGE_SUPPLY_CHANGES_TOTAL: Lazy<Family<AssetLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Number of clawback ledger changes observed for the watched asset.
+pub static ASSET_CLAWBACK_EVENTS_TOTAL: Lazy<Family<AssetLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
 
 /// Histogram tracking reconcile duration (seconds)
 pub static RECONCILE_DURATION_SECONDS: Lazy<Family<ReconcileLabels, Histogram>> = Lazy::new(|| {
@@ -253,6 +333,19 @@ pub static TRANSACTION_RESULT_TOTAL: Lazy<
     Family<TransactionResultLabels, Counter<u64, AtomicU64>>,
 > = Lazy::new(Family::default);
 
+/// Histogram tracking Horizon migration duration in seconds
+pub static HORIZON_MIGRATION_DURATION_SECONDS: Lazy<Family<HorizonMigrationLabels, Histogram>> =
+    Lazy::new(|| {
+        fn migration_histogram() -> Histogram {
+            Histogram::new(exponential_buckets(0.1, 2.0, 16))
+        }
+        Family::new_with_constructor(migration_histogram)
+    });
+
+/// Counter tracking Horizon migration results
+pub static HORIZON_MIGRATION_TOTAL: Lazy<Family<HorizonMigrationLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
 /// Counter tracking host function calls
 pub static HOST_FUNCTION_CALLS_TOTAL: Lazy<Family<SorobanLabels, Counter<u64, AtomicU64>>> =
     Lazy::new(Family::default);
@@ -281,6 +374,111 @@ pub static DR_DRILL_EXECUTIONS_TOTAL: Lazy<Family<DRDrillLabels, Counter<u64, At
 /// Gauge tracking Time to Recovery (TTR) in milliseconds
 pub static DR_DRILL_TIME_TO_RECOVERY_MS: Lazy<Family<DRDrillLabels, Gauge<i64, AtomicI64>>> =
     Lazy::new(Family::default);
+
+/// Labels for health-gated multi-region traffic shift metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TrafficShiftLabels {
+    pub namespace: String,
+    pub name: String,
+    /// "failover" or "failback".
+    pub direction: String,
+}
+
+/// Gauge of the current phase of a traffic shift plan, as the phase enum value.
+pub static TRAFFIC_SHIFT_PHASE: Lazy<Family<TrafficShiftLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge of the primary region's share of traffic, in percent (0-100).
+pub static TRAFFIC_SHIFT_PRIMARY_WEIGHT_PERCENT: Lazy<
+    Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>,
+> = Lazy::new(Family::default);
+
+/// Gauge of the measured RTO of the last completed shift, in seconds.
+pub static TRAFFIC_SHIFT_RTO_SECONDS: Lazy<Family<TrafficShiftLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Labels for traffic shaping metrics.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TrafficRequestLabels {
+    pub namespace: String,
+    pub name: String,
+    pub priority: String,
+    pub decision: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct TrafficNodeLabels {
+    pub namespace: String,
+    pub name: String,
+}
+
+/// Counter tracking traffic shaping decisions by priority and decision.
+pub static TRAFFIC_REQUESTS_TOTAL: Lazy<Family<TrafficRequestLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking effective adaptive rate limit (RPS).
+pub static TRAFFIC_EFFECTIVE_RPS: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking observed system load as percentage (0-100).
+pub static TRAFFIC_SYSTEM_LOAD_PERCENT: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge tracking circuit breaker state (0=closed, 1=open, 2=half-open).
+pub static TRAFFIC_CIRCUIT_BREAKER_STATE: Lazy<Family<TrafficNodeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct FeeMarketLabels {
+    pub network: String,
+    pub fee_type: String,
+}
+
+pub static FEE_MARKET_P95_STROOPS: Lazy<Family<FeeMarketLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_SPIKE_THRESHOLD_STROOPS: Lazy<Family<FeeMarketLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_BURN_STROOPS_TOTAL: Lazy<Family<FeeMarketLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_INCLUSION_RATE: Lazy<Family<FeeMarketLabels, Gauge<f64, AtomicU64>>> =
+    Lazy::new(Family::default);
+pub static FEE_MARKET_LEDGER: Lazy<Family<FeeMarketLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Labels for control-plane degradation metrics (#1494).
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ControlPlaneComponentLabels {
+    pub component: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct DegradationTransitionLabels {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct SuppressedActionLabels {
+    pub action: String,
+}
+
+/// Current degradation level (0=Normal, 1=Reduced, 2=Degraded, 3=Frozen).
+pub static CONTROL_PLANE_DEGRADATION_LEVEL: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Per-component state (1=healthy, 0=unhealthy, -1=unknown).
+pub static CONTROL_PLANE_COMPONENT_STATE: Lazy<
+    Family<ControlPlaneComponentLabels, Gauge<i64, AtomicI64>>,
+> = Lazy::new(Family::default);
+
+/// Degradation level transitions.
+pub static CONTROL_PLANE_DEGRADATION_TRANSITIONS: Lazy<
+    Family<DegradationTransitionLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Operator actions withheld by the degradation gate.
+pub static CONTROL_PLANE_SUPPRESSED_ACTIONS: Lazy<
+    Family<SuppressedActionLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
 
 /// Global metrics registry
 pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
@@ -326,14 +524,29 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         HORIZON_TPS.clone(),
     );
     registry.register(
+        "stellar_horizon_queue_length",
+        "Pending Horizon request queue length",
+        HORIZON_QUEUE_LENGTH.clone(),
+    );
+    registry.register(
         "stellar_node_active_connections",
         "Number of active peer connections",
         ACTIVE_CONNECTIONS.clone(),
     );
     registry.register(
         "stellar_node_pending_rpc_queue",
-        "Current pending Soroban RPC request queue depth",
+        "Pending Soroban RPC request queue length",
         PENDING_RPC_QUEUE.clone(),
+    );
+    registry.register(
+        "stellar_horizon_request_error_ratio",
+        "Ratio of Horizon API requests returning 4xx/5xx",
+        HORIZON_REQUEST_ERROR_RATIO.clone(),
+    );
+    registry.register(
+        "stellar_horizon_db_query_duration_seconds",
+        "Average Horizon database query duration in seconds",
+        HORIZON_DB_QUERY_DURATION_SECONDS.clone(),
     );
     registry.register(
         "stellar_archive_ledger_lag",
@@ -444,6 +657,17 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         HOST_FUNCTION_CALLS_TOTAL.clone(),
     );
 
+    registry.register(
+        "stellar_horizon_migration_duration_seconds",
+        "Duration of Horizon database migrations in seconds",
+        HORIZON_MIGRATION_DURATION_SECONDS.clone(),
+    );
+    registry.register(
+        "stellar_horizon_migration_total",
+        "Total number of Horizon database migration executions",
+        HORIZON_MIGRATION_TOTAL.clone(),
+    );
+
     // Register DR drill metrics
     registry.register(
         "stellar_dr_drill_execution_time_ms",
@@ -459,6 +683,49 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         "stellar_dr_drill_time_to_recovery_ms",
         "Time to Recovery (TTR) for DR drills in milliseconds",
         DR_DRILL_TIME_TO_RECOVERY_MS.clone(),
+    );
+
+    // Register health-gated multi-region traffic shift metrics
+    registry.register(
+        "stellar_traffic_shift_phase",
+        "Phase of the health-gated traffic shift plan (0=Idle, 1=Gated, 2=Draining, 3=Shifting, 4=Soaking, 5=Completed, 6=Aborted, 7=Failed)",
+        TRAFFIC_SHIFT_PHASE.clone(),
+    );
+    registry.register(
+        "stellar_traffic_shift_primary_weight_percent",
+        "Share of traffic still served by the primary region, in percent (0-100)",
+        TRAFFIC_SHIFT_PRIMARY_WEIGHT_PERCENT.clone(),
+    );
+    registry.register(
+        "stellar_traffic_shift_rto_seconds",
+        "Measured recovery time of the last completed traffic shift, in seconds",
+        TRAFFIC_SHIFT_RTO_SECONDS.clone(),
+    );
+
+    registry.register(
+        "stellar_fee_market_p95_stroops",
+        "95th percentile transaction inclusion fee in stroops by network and transaction class",
+        FEE_MARKET_P95_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_spike_threshold_stroops",
+        "Configured fee spike threshold in stroops",
+        FEE_MARKET_SPIKE_THRESHOLD_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_burn_stroops_total",
+        "Cumulative transaction fees burned in stroops by network and transaction class",
+        FEE_MARKET_BURN_STROOPS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_inclusion_rate",
+        "Fraction of submitted transactions included in the observed ledger",
+        FEE_MARKET_INCLUSION_RATE.clone(),
+    );
+    registry.register(
+        "stellar_fee_market_ledger",
+        "Latest ledger sequence observed by the fee market collector",
+        FEE_MARKET_LEDGER.clone(),
     );
 
     // Register PVC disk scaling metrics
@@ -483,6 +750,70 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         PVC_EXPANSION_COUNT.clone(),
     );
 
+    // Register snapshot integrity metrics
+    registry.register(
+        "stellar_snapshot_integrity_status",
+        "Snapshot integrity check result (1 = pass, 0 = fail)",
+        SNAPSHOT_INTEGRITY_STATUS.clone(),
+    );
+    registry.register(
+        "stellar_snapshot_integrity_check_duration_ms",
+        "Duration of snapshot integrity check in milliseconds",
+        SNAPSHOT_INTEGRITY_CHECK_DURATION_MS.clone(),
+    );
+
+    registry.register(
+        "stellar_asset_supply_stroops",
+        "Current watched asset supply in stroops",
+        ASSET_SUPPLY_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_asset_holders",
+        "Current number of accounts holding a watched asset",
+        ASSET_HOLDERS.clone(),
+    );
+    registry.register(
+        "stellar_asset_liquidity_stroops",
+        "Current watched asset liquidity in stroops",
+        ASSET_LIQUIDITY_STROOPS.clone(),
+    );
+    registry.register(
+        "stellar_asset_supply_change_percent",
+        "Signed supply change percentage observed in the latest ledger",
+        ASSET_SUPPLY_CHANGE_PERCENT.clone(),
+    );
+    registry.register(
+        "stellar_asset_large_supply_changes_total",
+        "Number of supply changes above the monitor's configured threshold",
+        ASSET_LARGE_SUPPLY_CHANGES_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_asset_clawback_events_total",
+        "Total observed clawback ledger changes for watched assets",
+        ASSET_CLAWBACK_EVENTS_TOTAL.clone(),
+    );
+
+    registry.register(
+        "stellar_traffic_requests_total",
+        "Total traffic shaping decisions by priority and decision",
+        TRAFFIC_REQUESTS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_traffic_effective_rps",
+        "Effective adaptive rate limit in requests per second",
+        TRAFFIC_EFFECTIVE_RPS.clone(),
+    );
+    registry.register(
+        "stellar_traffic_system_load_percent",
+        "Observed system load as a percentage",
+        TRAFFIC_SYSTEM_LOAD_PERCENT.clone(),
+    );
+    registry.register(
+        "stellar_traffic_circuit_breaker_state",
+        "Circuit breaker state (0=closed, 1=open, 2=half-open)",
+        TRAFFIC_CIRCUIT_BREAKER_STATE.clone(),
+    );
+
     // Register operator build-info and leader metrics
     registry.register(
         "stellar_operator_info",
@@ -504,6 +835,142 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
         "stellar_operator_ready",
         "1 if the operator is ready (K8s watch healthy and first reconcile complete), 0 otherwise",
         OPERATOR_READY_STATUS.clone(),
+    );
+
+    // ── Job / CronJob orphan reclamation metrics ─────────────────────────
+    registry.register(
+        "stellar_job_orphans_reclaimed_total",
+        "Total number of orphaned Job/Pod artifacts reclaimed, by namespace, kind and orphan class",
+        JOB_ORPHANS_RECLAIMED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_job_orphan_pods_outstanding",
+        "Number of orphaned Job pods still awaiting reclamation after a sweep",
+        JOB_ORPHAN_PODS_OUTSTANDING.clone(),
+    );
+
+    // ── Observability Pipeline metrics ────────────────────────────────────
+    registry.register(
+        "stellar_observability_pipeline_up",
+        "1 if the observability pipeline is running, 0 otherwise",
+        OBSERVABILITY_PIPELINE_UP.clone(),
+    );
+    registry.register(
+        "stellar_observability_events_ingested_total",
+        "Total number of observability events ingested by source",
+        OBSERVABILITY_EVENTS_INGESTED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_anomalies_total",
+        "Total number of anomalies detected by type",
+        OBSERVABILITY_ANOMALIES_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_anomalies_active",
+        "Number of currently active (unresolved) anomalies",
+        OBSERVABILITY_ANOMALIES_ACTIVE.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_total",
+        "Total number of intelligent alerts generated",
+        OBSERVABILITY_ALERTS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_active",
+        "Number of currently active (unresolved) alerts",
+        OBSERVABILITY_ALERTS_ACTIVE.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_deduplicated_total",
+        "Total number of alerts suppressed by deduplication",
+        OBSERVABILITY_ALERTS_DEDUPLICATED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_alerts_resolved_total",
+        "Total number of alerts resolved",
+        OBSERVABILITY_ALERTS_RESOLVED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_correlations_total",
+        "Total number of event correlations found by type",
+        OBSERVABILITY_CORRELATIONS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_incidents_open",
+        "Number of currently open incidents",
+        OBSERVABILITY_INCIDENTS_OPEN.clone(),
+    );
+    registry.register(
+        "stellar_observability_incidents_resolved_total",
+        "Total number of incidents resolved",
+        OBSERVABILITY_INCIDENTS_RESOLVED_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_incident_mttr_seconds",
+        "Mean time to resolve incidents in seconds",
+        OBSERVABILITY_INCIDENT_MTTR_SECONDS.clone(),
+    );
+    registry.register(
+        "stellar_observability_rca_confidence",
+        "Confidence score of the most recent root cause analysis (0.0–1.0)",
+        OBSERVABILITY_RCA_CONFIDENCE.clone(),
+    );
+    registry.register(
+        "stellar_observability_predictive_alerts_total",
+        "Total number of predictive alerts generated",
+        OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL.clone(),
+    );
+    registry.register(
+        "stellar_observability_baseline_samples",
+        "Number of samples in the baseline for each metric",
+        OBSERVABILITY_BASELINE_SAMPLES.clone(),
+    );
+
+    registry.register(
+        "stellar_control_plane_degradation_level",
+        "Control-plane degradation level (0=Normal, 1=Reduced, 2=Degraded, 3=Frozen)",
+        CONTROL_PLANE_DEGRADATION_LEVEL.clone(),
+    );
+    registry.register(
+        "stellar_control_plane_component_state",
+        "Control-plane component state (1=healthy, 0=unhealthy, -1=unknown)",
+        CONTROL_PLANE_COMPONENT_STATE.clone(),
+    );
+    registry.register(
+        "stellar_control_plane_degradation_transitions",
+        "Control-plane degradation level transitions",
+        CONTROL_PLANE_DEGRADATION_TRANSITIONS.clone(),
+    );
+    registry.register(
+        "stellar_control_plane_suppressed_actions",
+        "Operator actions withheld because of control-plane degradation",
+        CONTROL_PLANE_SUPPRESSED_ACTIONS.clone(),
+    );
+
+    registry.register(
+        "stellar_cost_savings_usd",
+        "Realized cost savings versus on-demand (USD)",
+        COST_SAVINGS_USD.clone(),
+    );
+    registry.register(
+        "stellar_cost_savings_hourly_usd",
+        "Realized cost savings in the current UTC hour (USD)",
+        COST_SAVINGS_HOURLY_USD.clone(),
+    );
+    registry.register(
+        "stellar_spot_savings_usd",
+        "Spot-instance savings (alias of realized cost savings)",
+        SPOT_SAVINGS_USD.clone(),
+    );
+    registry.register(
+        "stellar_best_effort_spot_placement_ratio",
+        "Share of best-effort pods on spot capacity",
+        BEST_EFFORT_SPOT_PLACEMENT_RATIO.clone(),
+    );
+    registry.register(
+        "stellar_critical_on_spot_pods",
+        "Critical-tier pods currently scheduled onto spot (must be 0)",
+        CRITICAL_ON_SPOT_PODS.clone(),
     );
 
     registry
@@ -638,6 +1105,48 @@ pub fn set_ingestion_lag_with_dp(
         hardware_generation: hardware_generation.to_string(),
     };
     INGESTION_LAG.get_or_create(&labels).set(val);
+}
+
+/// Record a traffic shaping decision.
+pub fn observe_traffic_request(namespace: &str, name: &str, priority: &str, decision: &str) {
+    let labels = TrafficRequestLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        priority: priority.to_string(),
+        decision: decision.to_string(),
+    };
+    TRAFFIC_REQUESTS_TOTAL.get_or_create(&labels).inc();
+}
+
+/// Set effective adaptive traffic limit in RPS.
+pub fn set_traffic_effective_rps(namespace: &str, name: &str, value: i64) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_EFFECTIVE_RPS.get_or_create(&labels).set(value);
+}
+
+/// Set observed system load percentage.
+pub fn set_traffic_system_load(namespace: &str, name: &str, value: i64) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_SYSTEM_LOAD_PERCENT
+        .get_or_create(&labels)
+        .set(value);
+}
+
+/// Set current circuit breaker state.
+pub fn set_traffic_circuit_breaker_state(namespace: &str, name: &str, state: i64) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_CIRCUIT_BREAKER_STATE
+        .get_or_create(&labels)
+        .set(state);
 }
 
 /// Node phase enumeration for metrics
@@ -819,6 +1328,27 @@ pub fn set_horizon_tps(
     HORIZON_TPS.get_or_create(&labels).set(tps);
 }
 
+/// Update the Horizon queue length metric for a node
+pub fn set_horizon_queue_length(
+    namespace: &str,
+    name: &str,
+    node_type: &str,
+    network: &str,
+    hardware_generation: &str,
+    queue_length: i64,
+) {
+    let labels = NodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        node_type: node_type.to_string(),
+        network: network.to_string(),
+        hardware_generation: hardware_generation.to_string(),
+    };
+    HORIZON_QUEUE_LENGTH
+        .get_or_create(&labels)
+        .set(queue_length);
+}
+
 /// Update the active connections metric for a node
 pub fn set_active_connections(
     namespace: &str,
@@ -836,6 +1366,48 @@ pub fn set_active_connections(
         hardware_generation: hardware_generation.to_string(),
     };
     ACTIVE_CONNECTIONS.get_or_create(&labels).set(connections);
+}
+
+/// Update the Horizon API request error ratio (0.0-1.0) for a node
+pub fn set_horizon_request_error_ratio(
+    namespace: &str,
+    name: &str,
+    node_type: &str,
+    network: &str,
+    hardware_generation: &str,
+    error_ratio: f64,
+) {
+    let labels = NodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        node_type: node_type.to_string(),
+        network: network.to_string(),
+        hardware_generation: hardware_generation.to_string(),
+    };
+    HORIZON_REQUEST_ERROR_RATIO
+        .get_or_create(&labels)
+        .set(error_ratio);
+}
+
+/// Update the average Horizon database query duration (seconds) for a node
+pub fn set_horizon_db_query_duration_seconds(
+    namespace: &str,
+    name: &str,
+    node_type: &str,
+    network: &str,
+    hardware_generation: &str,
+    duration_seconds: f64,
+) {
+    let labels = NodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        node_type: node_type.to_string(),
+        network: network.to_string(),
+        hardware_generation: hardware_generation.to_string(),
+    };
+    HORIZON_DB_QUERY_DURATION_SECONDS
+        .get_or_create(&labels)
+        .set(duration_seconds);
 }
 
 fn generate_laplace_noise(epsilon: f64, sensitivity: f64) -> f64 {
@@ -967,6 +1539,36 @@ pub fn inc_transaction_result(namespace: &str, name: &str, network: &str, succes
     TRANSACTION_RESULT_TOTAL.get_or_create(&labels).inc();
 }
 
+/// Record Horizon migration duration in seconds.
+pub fn observe_horizon_migration_duration(
+    namespace: &str,
+    name: &str,
+    network: &str,
+    status: &str,
+    duration_secs: f64,
+) {
+    let labels = HorizonMigrationLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        network: network.to_string(),
+        status: status.to_string(),
+    };
+    HORIZON_MIGRATION_DURATION_SECONDS
+        .get_or_create(&labels)
+        .observe(duration_secs);
+}
+
+/// Increment Horizon migration result counter.
+pub fn inc_horizon_migration_total(namespace: &str, name: &str, network: &str, status: &str) {
+    let labels = HorizonMigrationLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        network: network.to_string(),
+        status: status.to_string(),
+    };
+    HORIZON_MIGRATION_TOTAL.get_or_create(&labels).inc();
+}
+
 /// Increment host function call counter
 pub fn inc_host_function_call(namespace: &str, name: &str, network: &str, contract_id: &str) {
     let labels = SorobanLabels {
@@ -1074,6 +1676,57 @@ pub fn observe_dr_drill_execution(
     DR_DRILL_EXECUTIONS_TOTAL.get_or_create(&labels).inc();
 }
 
+/// Set the current phase of a health-gated traffic shift plan.
+///
+/// Phase values mirror `TrafficShiftPhase`: Idle=0, Gated=1, Draining=2,
+/// Shifting=3, Soaking=4, Completed=5, Aborted=6, Failed=7.
+pub fn set_traffic_shift_phase(
+    namespace: &str,
+    name: &str,
+    direction: &str,
+    phase: crate::crd::TrafficShiftPhase,
+) {
+    let labels = TrafficShiftLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        direction: direction.to_string(),
+    };
+    let value = match phase {
+        crate::crd::TrafficShiftPhase::Idle => 0,
+        crate::crd::TrafficShiftPhase::Gated => 1,
+        crate::crd::TrafficShiftPhase::Draining => 2,
+        crate::crd::TrafficShiftPhase::Shifting => 3,
+        crate::crd::TrafficShiftPhase::Soaking => 4,
+        crate::crd::TrafficShiftPhase::Completed => 5,
+        crate::crd::TrafficShiftPhase::Aborted => 6,
+        crate::crd::TrafficShiftPhase::Failed => 7,
+    };
+    TRAFFIC_SHIFT_PHASE.get_or_create(&labels).set(value);
+}
+
+/// Set the share of traffic still served by the primary region, in percent.
+pub fn set_traffic_shift_primary_weight(namespace: &str, name: &str, primary_percent: u32) {
+    let labels = TrafficNodeLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+    };
+    TRAFFIC_SHIFT_PRIMARY_WEIGHT_PERCENT
+        .get_or_create(&labels)
+        .set(i64::from(primary_percent));
+}
+
+/// Set the measured recovery time of the last completed traffic shift.
+pub fn set_traffic_shift_rto_seconds(namespace: &str, name: &str, direction: &str, seconds: i64) {
+    let labels = TrafficShiftLabels {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        direction: direction.to_string(),
+    };
+    TRAFFIC_SHIFT_RTO_SECONDS
+        .get_or_create(&labels)
+        .set(seconds);
+}
+
 /// Set the Time to Recovery (TTR) for a DR drill
 pub fn set_dr_drill_time_to_recovery(namespace: &str, name: &str, status: &str, ttr_ms: i64) {
     let labels = DRDrillLabels {
@@ -1114,6 +1767,239 @@ pub static OPERATOR_UPTIME_SECONDS: Lazy<Counter<u64, AtomicU64>> = Lazy::new(Co
 
 /// Gauge tracking whether the operator is ready (1 = ready, 0 = not ready).
 pub static OPERATOR_READY_STATUS: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+// ── Job / CronJob Orphan Reclamation Metrics ─────────────────────────────
+
+/// Labels for job/pod orphan reclamation metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct JobOrphanLabels {
+    pub namespace: String,
+    /// `Job` or `Pod`.
+    pub kind: String,
+    /// Stable orphan class, see `controller::job_orphan_reconciler::OrphanClass`.
+    pub class: String,
+}
+
+/// Labels for per-namespace orphan gauges
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct JobOrphanGaugeLabels {
+    pub namespace: String,
+}
+
+/// Counter of Job/CronJob artifacts reclaimed by the orphan reconciler
+pub static JOB_ORPHANS_RECLAIMED_TOTAL: Lazy<Family<JobOrphanLabels, Counter<u64, AtomicU64>>> =
+    Lazy::new(Family::default);
+
+/// Gauge of orphan Job pods still awaiting reclamation at the end of a sweep
+pub static JOB_ORPHAN_PODS_OUTSTANDING: Lazy<Family<JobOrphanGaugeLabels, Gauge<i64, AtomicI64>>> =
+    Lazy::new(Family::default);
+
+/// Record `count` reclaimed Job/Pod artifacts for a namespace and orphan class.
+pub fn inc_job_orphan_reclaimed(namespace: &str, kind: &str, class: &str, count: u64) {
+    JOB_ORPHANS_RECLAIMED_TOTAL
+        .get_or_create(&JobOrphanLabels {
+            namespace: namespace.to_string(),
+            kind: kind.to_string(),
+            class: class.to_string(),
+        })
+        .inc_by(count);
+}
+
+/// Set the number of orphan Job pods still pending after a sweep.
+pub fn set_job_orphans_outstanding(namespace: &str, count: i64) {
+    JOB_ORPHAN_PODS_OUTSTANDING
+        .get_or_create(&JobOrphanGaugeLabels {
+            namespace: namespace.to_string(),
+        })
+        .set(count);
+}
+
+// ── Observability Pipeline Metrics ────────────────────────────────────────
+
+/// Labels for observability pipeline event source metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilitySourceLabels {
+    pub source: String,
+}
+
+/// Labels for observability anomaly metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilityAnomalyLabels {
+    pub anomaly_type: String,
+    pub metric_name: String,
+}
+
+/// Labels for observability correlation metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilityCorrelationLabels {
+    pub correlation_type: String,
+}
+
+/// Labels for observability baseline metrics
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct ObservabilityBaselineLabels {
+    pub metric_name: String,
+}
+
+/// Gauge: 1 if the observability pipeline is running
+pub static OBSERVABILITY_PIPELINE_UP: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: total events ingested by source (Metric, Log, Trace, Alert, Audit)
+pub static OBSERVABILITY_EVENTS_INGESTED_TOTAL: Lazy<
+    Family<ObservabilitySourceLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Counter: total anomalies detected by type and metric name
+pub static OBSERVABILITY_ANOMALIES_TOTAL: Lazy<
+    Family<ObservabilityAnomalyLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Gauge: currently active (unresolved) anomalies
+pub static OBSERVABILITY_ANOMALIES_ACTIVE: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: total intelligent alerts generated
+pub static OBSERVABILITY_ALERTS_TOTAL: Lazy<Counter<u64, AtomicU64>> = Lazy::new(Counter::default);
+
+/// Gauge: currently active (unresolved) alerts
+pub static OBSERVABILITY_ALERTS_ACTIVE: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: alerts suppressed by deduplication
+pub static OBSERVABILITY_ALERTS_DEDUPLICATED_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Counter: alerts resolved
+pub static OBSERVABILITY_ALERTS_RESOLVED_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Counter: event correlations found by type
+pub static OBSERVABILITY_CORRELATIONS_TOTAL: Lazy<
+    Family<ObservabilityCorrelationLabels, Counter<u64, AtomicU64>>,
+> = Lazy::new(Family::default);
+
+/// Gauge: currently open incidents
+pub static OBSERVABILITY_INCIDENTS_OPEN: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Counter: incidents resolved
+pub static OBSERVABILITY_INCIDENTS_RESOLVED_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Gauge: mean time to resolve incidents in seconds
+pub static OBSERVABILITY_INCIDENT_MTTR_SECONDS: Lazy<Gauge<f64, AtomicU64>> =
+    Lazy::new(Gauge::default);
+
+/// Gauge: confidence of the most recent root cause analysis (0.0–1.0)
+pub static OBSERVABILITY_RCA_CONFIDENCE: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+
+/// Counter: predictive alerts generated
+pub static OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL: Lazy<Counter<u64, AtomicU64>> =
+    Lazy::new(Counter::default);
+
+/// Gauge: number of baseline samples per metric
+pub static OBSERVABILITY_BASELINE_SAMPLES: Lazy<
+    Family<ObservabilityBaselineLabels, Gauge<i64, AtomicI64>>,
+> = Lazy::new(Family::default);
+
+/// Realized placement savings versus on-demand (#1484).
+pub static COST_SAVINGS_USD: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+pub static COST_SAVINGS_HOURLY_USD: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+pub static SPOT_SAVINGS_USD: Lazy<Gauge<f64, AtomicU64>> = Lazy::new(Gauge::default);
+pub static BEST_EFFORT_SPOT_PLACEMENT_RATIO: Lazy<Gauge<f64, AtomicU64>> =
+    Lazy::new(Gauge::default);
+pub static CRITICAL_ON_SPOT_PODS: Lazy<Gauge<i64, AtomicI64>> = Lazy::new(Gauge::default);
+
+/// Publish live cost-aware placement metrics for the existing cost dashboard.
+pub fn set_placement_cost_metrics(hourly_usd: f64, spot_ratio: f64, critical_on_spot: u64) {
+    COST_SAVINGS_USD.set(hourly_usd);
+    COST_SAVINGS_HOURLY_USD.set(hourly_usd);
+    SPOT_SAVINGS_USD.set(hourly_usd);
+    BEST_EFFORT_SPOT_PLACEMENT_RATIO.set(spot_ratio);
+    CRITICAL_ON_SPOT_PODS.set(critical_on_spot as i64);
+}
+
+// ── Observability helper functions ────────────────────────────────────────
+
+/// Record an ingested observability event
+pub fn inc_observability_event(source: &str) {
+    OBSERVABILITY_EVENTS_INGESTED_TOTAL
+        .get_or_create(&ObservabilitySourceLabels {
+            source: source.to_string(),
+        })
+        .inc();
+}
+
+/// Record a detected anomaly
+pub fn inc_observability_anomaly(anomaly_type: &str, metric_name: &str) {
+    OBSERVABILITY_ANOMALIES_TOTAL
+        .get_or_create(&ObservabilityAnomalyLabels {
+            anomaly_type: anomaly_type.to_string(),
+            metric_name: metric_name.to_string(),
+        })
+        .inc();
+    let current = OBSERVABILITY_ANOMALIES_ACTIVE.get();
+    OBSERVABILITY_ANOMALIES_ACTIVE.set(current + 1);
+}
+
+/// Record a new alert
+pub fn inc_observability_alert() {
+    OBSERVABILITY_ALERTS_TOTAL.inc();
+    let current = OBSERVABILITY_ALERTS_ACTIVE.get();
+    OBSERVABILITY_ALERTS_ACTIVE.set(current + 1);
+}
+
+/// Record a deduplicated (suppressed) alert
+pub fn inc_observability_alert_deduplicated() {
+    OBSERVABILITY_ALERTS_DEDUPLICATED_TOTAL.inc();
+}
+
+/// Record a resolved alert
+pub fn inc_observability_alert_resolved() {
+    OBSERVABILITY_ALERTS_RESOLVED_TOTAL.inc();
+    let current = OBSERVABILITY_ALERTS_ACTIVE.get();
+    OBSERVABILITY_ALERTS_ACTIVE.set((current - 1).max(0));
+}
+
+/// Record a correlation found
+pub fn inc_observability_correlation(correlation_type: &str) {
+    OBSERVABILITY_CORRELATIONS_TOTAL
+        .get_or_create(&ObservabilityCorrelationLabels {
+            correlation_type: correlation_type.to_string(),
+        })
+        .inc();
+}
+
+/// Update open incident count
+pub fn set_observability_incidents_open(count: i64) {
+    OBSERVABILITY_INCIDENTS_OPEN.set(count);
+}
+
+/// Record a resolved incident
+pub fn inc_observability_incident_resolved() {
+    OBSERVABILITY_INCIDENTS_RESOLVED_TOTAL.inc();
+}
+
+/// Update MTTR
+pub fn set_observability_mttr_seconds(mttr: f64) {
+    OBSERVABILITY_INCIDENT_MTTR_SECONDS.set(mttr);
+}
+
+/// Update RCA confidence
+pub fn set_observability_rca_confidence(confidence: f64) {
+    OBSERVABILITY_RCA_CONFIDENCE.set(confidence);
+}
+
+/// Record a predictive alert
+pub fn inc_observability_predictive_alert() {
+    OBSERVABILITY_PREDICTIVE_ALERTS_TOTAL.inc();
+}
+
+/// Update baseline sample count for a metric
+pub fn set_observability_baseline_samples(metric_name: &str, count: i64) {
+    OBSERVABILITY_BASELINE_SAMPLES
+        .get_or_create(&ObservabilityBaselineLabels {
+            metric_name: metric_name.to_string(),
+        })
+        .set(count);
+}
 
 /// Initialise the `stellar_operator_info` gauge with build-time labels.
 /// Call once at startup after the registry is first accessed.
@@ -1430,6 +2316,35 @@ mod tests {
     }
 
     #[test]
+    fn test_job_orphan_reclamation_metrics() {
+        inc_job_orphan_reclaimed("stellar", "Job", "deleted_cron_job", 2);
+        inc_job_orphan_reclaimed("stellar", "Job", "deleted_cron_job", 1);
+        inc_job_orphan_reclaimed("stellar", "Pod", "completed_pod", 4);
+
+        let counter = JOB_ORPHANS_RECLAIMED_TOTAL.get_or_create(&JobOrphanLabels {
+            namespace: "stellar".to_string(),
+            kind: "Job".to_string(),
+            class: "deleted_cron_job".to_string(),
+        });
+        assert_eq!(counter.get(), 3);
+        // A different namespace is tracked independently.
+        inc_job_orphan_reclaimed("other", "Job", "deleted_cron_job", 1);
+        let other = JOB_ORPHANS_RECLAIMED_TOTAL.get_or_create(&JobOrphanLabels {
+            namespace: "other".to_string(),
+            kind: "Job".to_string(),
+            class: "deleted_cron_job".to_string(),
+        });
+        assert_eq!(other.get(), 1);
+
+        set_job_orphans_outstanding("stellar", 3);
+        set_job_orphans_outstanding("stellar", 0);
+        let gauge = JOB_ORPHAN_PODS_OUTSTANDING.get_or_create(&JobOrphanGaugeLabels {
+            namespace: "stellar".to_string(),
+        });
+        assert_eq!(gauge.get(), 0);
+    }
+
+    #[test]
     fn test_inc_operator_reconcile_error() {
         // Test that incrementing operator reconcile error doesn't panic
         inc_operator_reconcile_error("stellarnode", "kube");
@@ -1470,4 +2385,40 @@ mod tests {
         inc_operator_reconcile_error("stellarnode", "unknown");
         // Function should not panic with various error kinds
     }
+}
+
+/// Record the current control-plane degradation level.
+pub fn set_control_plane_degradation_level(level: i64) {
+    CONTROL_PLANE_DEGRADATION_LEVEL.set(level);
+}
+
+/// Record a control-plane component's state (1=healthy, 0=unhealthy, -1=unknown).
+pub fn set_control_plane_component_state(component: &str, state: i64) {
+    let labels = ControlPlaneComponentLabels {
+        component: component.to_string(),
+    };
+    CONTROL_PLANE_COMPONENT_STATE
+        .get_or_create(&labels)
+        .set(state);
+}
+
+/// Count a degradation level transition.
+pub fn inc_control_plane_degradation_transition(from: &str, to: &str) {
+    let labels = DegradationTransitionLabels {
+        from: from.to_string(),
+        to: to.to_string(),
+    };
+    CONTROL_PLANE_DEGRADATION_TRANSITIONS
+        .get_or_create(&labels)
+        .inc();
+}
+
+/// Count an operator action withheld by the degradation gate.
+pub fn inc_control_plane_suppressed_action(action: &str) {
+    let labels = SuppressedActionLabels {
+        action: action.to_string(),
+    };
+    CONTROL_PLANE_SUPPRESSED_ACTIONS
+        .get_or_create(&labels)
+        .inc();
 }

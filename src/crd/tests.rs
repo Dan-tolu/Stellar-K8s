@@ -1041,6 +1041,7 @@ mod stellar_node_spec_validation {
                 http_port: None,
                 log_level: Some("info".to_string()),
                 additional_config: None,
+                ..Default::default()
             });
         }
 
@@ -1065,6 +1066,7 @@ mod stellar_node_spec_validation {
                 http_port: Some(11701),
                 log_level: Some("debug".to_string()),
                 additional_config: Some("MAX_CONCURRENT_SUBPROCESSES=5".to_string()),
+                ..Default::default()
             });
         }
 
@@ -1091,6 +1093,7 @@ mod stellar_node_spec_validation {
                 http_port: None,
                 log_level: None,
                 additional_config: None,
+                ..Default::default()
             });
         }
 
@@ -1122,6 +1125,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1157,6 +1161,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.0,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1192,6 +1197,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 1.0,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1227,6 +1233,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         assert!(spec.validate().is_ok());
@@ -1254,6 +1261,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1290,6 +1298,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         let result = spec.validate();
@@ -1325,6 +1334,7 @@ mod stellar_node_spec_validation {
                 ewma_alpha: 0.3,
                 ..Default::default()
             }),
+            queue_autoscaling: None,
         });
 
         assert!(spec.validate().is_ok());
@@ -1348,6 +1358,7 @@ mod stellar_node_spec_validation {
                 http_port: Some(11626),
                 log_level: Some("info".to_string()),
                 additional_config: Some("# Custom config\nFOO=bar".to_string()),
+                ..Default::default()
             }),
             enable_preflight: true,
             max_events_per_request: 10000,

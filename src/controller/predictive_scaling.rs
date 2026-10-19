@@ -1,8 +1,20 @@
+// Copyright 2024 Stellar-K8s Contributors
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 //! Predictive Auto-Scaling for Horizon nodes
 //!
 //! Implements a time-series ledger volume collector and a simple forecasting
 //! model (exponential smoothing / Holt-Winters) to predict the next hour's
-//! load and pre-emptively adjust the HPA `minReplicas` before traffic spikes.
+//! load and preemptively adjust the HPA `minReplicas` before traffic spikes.
 //!
 //! # Architecture
 //!
@@ -49,7 +61,7 @@ use tracing::{debug, info, warn};
 /// Predictive auto-scaling configuration for Horizon nodes.
 ///
 /// Uses double exponential smoothing (Holt-Winters) to forecast ledger
-/// volume and pre-emptively adjust HPA `minReplicas`.
+/// volume and preemptively adjust HPA `minReplicas`.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PredictiveScalingConfig {
@@ -268,7 +280,7 @@ pub fn compute_min_replicas(
         return current_min;
     }
     let needed = ((forecast_tps * scaling_factor) / tps_per_replica).ceil() as i32;
-    needed.max(current_min).min(max_replicas).max(1)
+    needed.clamp(current_min, max_replicas).max(1)
 }
 
 // ============================================================================

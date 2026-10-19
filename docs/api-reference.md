@@ -581,6 +581,65 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Description** | Maintenance window start time (24h format, e.g., "02:00") Maintenance will only trigger during this window |
 | **Required** | *(required)* |
 
+### `spec.diagnosticSidecarResources`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources` |
+| **Type** | `object` |
+| **Description** | Resource requests and limits for the operator-managed diagnostic health-check sidecar. Defaults to 50m CPU and 64Mi memory for both requests and limits when unset. |
+| **Nullable** | `true` |
+
+#### `spec.diagnosticSidecarResources.limits`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.limits` |
+| **Type** | `object` |
+| **Description** | Resource specification for CPU and memory |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.limits.cpu`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.limits.cpu` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.limits.memory`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.limits.memory` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+#### `spec.diagnosticSidecarResources.requests`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.requests` |
+| **Type** | `object` |
+| **Description** | Resource specification for CPU and memory |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.requests.cpu`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.requests.cpu` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+##### `spec.diagnosticSidecarResources.requests.memory`
+
+| | |
+|---|---|
+| **Path** | `spec.diagnosticSidecarResources.requests.memory` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
 ### `spec.drConfig`
 
 | | |
@@ -1041,6 +1100,18 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Type** | `string` |
 | **Nullable** | `true` |
 
+### `spec.initContainers`
+
+| | |
+|---|---|
+| **Path** | `spec.initContainers` |
+| **Type** | `array` of `object` |
+| **Description** | Optional init containers to run before the main Stellar container starts.
+These run to completion in order before the main container starts.
+Useful for tasks like fetching custom configuration, restoring state,
+or pre-populating volumes. |
+| **Nullable** | `true` |
+
 ### `spec.loadBalancer`
 
 | | |
@@ -1480,7 +1551,7 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 |---|---|
 | **Path** | `spec.networkPolicy.enabled` |
 | **Type** | `boolean` |
-| **Default** | `False` |
+| **Default** | `True` |
 
 #### `spec.networkPolicy.metricsNamespace`
 
@@ -2217,6 +2288,49 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Description** | Name of a Kubernetes Secret containing credentials for the backup URL. For S3: keys AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION. For HTTPS: key BEARER_TOKEN. |
 | **Nullable** | `true` |
 
+##### `spec.storage.snapshotRef.expectedLedgerSequence`
+
+| | |
+|---|---|
+| **Path** | `spec.storage.snapshotRef.expectedLedgerSequence` |
+| **Type** | `integer` (int64) |
+| **Description** | Source ledger sequence checked against the snapshot manifest after extraction. |
+| **Nullable** | `true` |
+
+##### `spec.storage.snapshotRef.expectedNetwork`
+
+| | |
+|---|---|
+| **Path** | `spec.storage.snapshotRef.expectedNetwork` |
+| **Type** | `string` |
+| **Description** | Source network checked against the snapshot manifest after extraction. |
+| **Nullable** | `true` |
+
+##### `spec.storage.snapshotRef.export`
+
+| | |
+|---|---|
+| **Path** | `spec.storage.snapshotRef.export` |
+| **Type** | `object` |
+| **Description** | S3 export destination on the source node. Export is triggered by annotation while the node is suspended. |
+| **Nullable** | `true` |
+
+###### `spec.storage.snapshotRef.export.credentialsSecretRef`
+
+| | |
+|---|---|
+| **Path** | `spec.storage.snapshotRef.export.credentialsSecretRef` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
+###### `spec.storage.snapshotRef.export.destination`
+
+| | |
+|---|---|
+| **Path** | `spec.storage.snapshotRef.export.destination` |
+| **Type** | `string` |
+| **Required** | *(required)* |
+
 ##### `spec.storage.snapshotRef.restoreImage`
 
 | | |
@@ -2224,6 +2338,15 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Path** | `spec.storage.snapshotRef.restoreImage` |
 | **Type** | `string` |
 | **Description** | Container image for the restore init container. Defaults to amazon/aws-cli:latest for S3 URLs, alpine:3 for HTTPS. |
+| **Nullable** | `true` |
+
+##### `spec.storage.snapshotRef.sha256`
+
+| | |
+|---|---|
+| **Path** | `spec.storage.snapshotRef.sha256` |
+| **Type** | `string` |
+| **Description** | Expected SHA-256 hex digest of the downloaded archive. Restore fails before extraction if it does not match. |
 | **Nullable** | `true` |
 
 ##### `spec.storage.snapshotRef.volumeSnapshotName`
@@ -2258,8 +2381,71 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 |---|---|
 | **Path** | `spec.strategy` |
 | **Type** | `object` |
-| **Description** | Rollout strategy for updates (RollingUpdate or Canary) |
+| **Description** | Rollout strategy for updates (RollingUpdate, Canary, or BlueGreen). Validators support RollingUpdate and BlueGreen; Canary is rejected. |
 | **Default** | `{'type': 'rollingUpdate'}` |
+
+#### `spec.strategy.blueGreen`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen` |
+| **Type** | `object` |
+| **Description** | Blue/green settings for Validator (Stellar Core) rollouts. Ignored for Horizon/SorobanRpc (those use the Horizon migration path). |
+| **Nullable** | `true` |
+
+##### `spec.strategy.blueGreen.maxLedgerLag`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen.maxLedgerLag` |
+| **Type** | `integer` (int64) |
+| **Description** | Maximum allowed ledger lag of green behind blue (or network reference). Matches the repository's read-replica freshness default of 5. |
+| **Default** | `5` |
+
+##### `spec.strategy.blueGreen.postCutoverSuccessThreshold`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen.postCutoverSuccessThreshold` |
+| **Type** | `integer` (int32) |
+| **Description** | Consecutive successful post-cutover health evaluations before blue may be retired. |
+| **Default** | `3` |
+
+##### `spec.strategy.blueGreen.readyTimeoutSeconds`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen.readyTimeoutSeconds` |
+| **Type** | `integer` (int32) |
+| **Description** | Maximum seconds to wait for green to become sync-eligible before failing closed. |
+| **Default** | `3600` |
+
+##### `spec.strategy.blueGreen.requireVolumeSnapshot`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen.requireVolumeSnapshot` |
+| **Type** | `boolean` |
+| **Description** | When true (default), green PVC must be provisioned from a CSI VolumeSnapshot of blue. When false, green may start from an empty PVC and catch up from history archives. |
+| **Default** | `True` |
+
+##### `spec.strategy.blueGreen.rollbackWindowSeconds`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen.rollbackWindowSeconds` |
+| **Type** | `integer` (int32) |
+| **Description** | Seconds to retain scaled-down blue after successful cutover for instant rollback. |
+| **Default** | `3600` |
+
+##### `spec.strategy.blueGreen.volumeSnapshotClassName`
+
+| | |
+|---|---|
+| **Path** | `spec.strategy.blueGreen.volumeSnapshotClassName` |
+| **Type** | `string` |
+| **Description** | Optional VolumeSnapshotClass for the cutover snapshot. If unset, the cluster default is used. |
+| **Nullable** | `true` |
 
 #### `spec.strategy.canary`
 
@@ -2294,7 +2480,7 @@ Fields marked *(required)* must be present in every `StellarNode` manifest.
 | **Type** | `string` |
 | **Description** | Rollout strategy type |
 | **Required** | *(required)* |
-| **Enum** | `rollingUpdate`, `canary` |
+| **Enum** | `rollingUpdate`, `canary`, `blueGreen` |
 
 ### `spec.suspended`
 
@@ -2782,6 +2968,51 @@ Requires the Vault Agent Injector mutating webhook in the cluster. The operator 
 | **Description** | Whether BGP sessions are established |
 | **Required** | *(required)* |
 
+### `status.blueGreenActiveColor`
+
+| | |
+|---|---|
+| **Path** | `status.blueGreenActiveColor` |
+| **Type** | `string` |
+| **Description** | Active deployment color for Validator blue/green (`blue` or `green`). |
+| **Nullable** | `true` |
+
+### `status.blueGreenMessage`
+
+| | |
+|---|---|
+| **Path** | `status.blueGreenMessage` |
+| **Type** | `string` |
+| **Description** | Human-readable message for the current Validator blue/green rollout. |
+| **Nullable** | `true` |
+
+### `status.blueGreenPhase`
+
+| | |
+|---|---|
+| **Path** | `status.blueGreenPhase` |
+| **Type** | `string` |
+| **Description** | Validator blue/green rollout phase (e.g. `BlueActive`, `WaitingForGreen`, `GreenActive`). |
+| **Nullable** | `true` |
+
+### `status.blueGreenSnapshotName`
+
+| | |
+|---|---|
+| **Path** | `status.blueGreenSnapshotName` |
+| **Type** | `string` |
+| **Description** | VolumeSnapshot used to seed the green Validator PVC (if any). |
+| **Nullable** | `true` |
+
+### `status.blueGreenTargetVersion`
+
+| | |
+|---|---|
+| **Path** | `status.blueGreenTargetVersion` |
+| **Type** | `string` |
+| **Description** | Target Core version for an in-progress Validator blue/green rollout. |
+| **Nullable** | `true` |
+
 ### `status.canaryReadyReplicas`
 
 | | |
@@ -2996,6 +3227,15 @@ Standard conditions include: - Ready: True when all sub-resources are healthy an
 | **Description** | Version of the database schema after last successful migration |
 | **Nullable** | `true` |
 
+### `status.lastSecretRotationTime`
+
+| | |
+|---|---|
+| **Path** | `status.lastSecretRotationTime` |
+| **Type** | `string` |
+| **Description** | RFC3339 timestamp of the last observed passphrase or seed secret rotation. |
+| **Nullable** | `true` |
+
 ### `status.ledgerSequence`
 
 | | |
@@ -3030,6 +3270,24 @@ Standard conditions include: - Ready: True when all sub-resources are healthy an
 | **Path** | `status.observedGeneration` |
 | **Type** | `integer` (int64) |
 | **Description** | Observed generation for status sync detection |
+| **Nullable** | `true` |
+
+### `status.observedPassphraseSecretVersion`
+
+| | |
+|---|---|
+| **Path** | `status.observedPassphraseSecretVersion` |
+| **Type** | `string` |
+| **Description** | Resource version of the passphrase Secret last applied to the pods. |
+| **Nullable** | `true` |
+
+### `status.observedSeedSecretVersion`
+
+| | |
+|---|---|
+| **Path** | `status.observedSeedSecretVersion` |
+| **Type** | `string` |
+| **Description** | Resource version of the validator seed Secret last applied to the pods. |
 | **Nullable** | `true` |
 
 ### `status.phase`
